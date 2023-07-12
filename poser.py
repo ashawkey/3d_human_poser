@@ -514,7 +514,7 @@ if __name__ == '__main__':
     if opt.save is not None:
         os.makedirs(opt.save, exist_ok=True)
         # render from fixed views and save all images
-        elevation = [-10, 0, 10, 20, 30]
+        elevation = [0, 10, 20]
         azimuth = np.arange(0, 360, dtype=np.int32)
         for ele in tqdm.tqdm(elevation):
             for azi in tqdm.tqdm(azimuth):
