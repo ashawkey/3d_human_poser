@@ -98,22 +98,33 @@ class Skeleton:
         # pan in camera coordinate system (careful on the sensitivity!)
         self.points3D[:, :3] += 0.0005 * rot.as_matrix()[:3, :3] @ np.array([dx, -dy, dz])
 
-    def draw(self, mvp, H, W, backview=False):
+    def draw(self, mvp, H, W, enable_occlusion=False):
         # mvp: [4, 4]
         canvas = np.zeros((H, W, 3), dtype=np.uint8)
 
-        points2D = self.points3D @ mvp.T # [18, 4]
-        points2D = points2D[:, :3] / points2D[:, 3:] # NDC in [-1, 1]
+        points = self.points3D @ mvp.T # [18, 4]
+        points = points[:, :3] / points[:, 3:] # NDC in [-1, 1]
 
-        xs = (points2D[:, 0] + 1) / 2 * H # [18]
-        ys = (points2D[:, 1] + 1) / 2 * W # [18]
+        xs = (points[:, 0] + 1) / 2 * H # [18]
+        ys = (points[:, 1] + 1) / 2 * W # [18]
         mask = (xs >= 0) & (xs < H) & (ys >= 0) & (ys < W)
 
-        # hide nose, eyes
-        if backview:
-            mask[0] = False
-            mask[-3] = False
-            mask[-4] = False
+        # hide certain keypoints based on empirical occlusion
+        if enable_occlusion:
+            # if nose is further than both eyes, it's back face
+            if points[0, 2] > points[-3, 2] and points[0, 2] > points[-4, 2]:
+                mask[0] = False
+                mask[-3] = False
+                mask[-4] = False
+            # if left ear is in the left of neck and right of right ear, hide it... and so on
+            if xs[-2] > xs[0] and xs[-2] < xs[-1]:
+                mask[-2] = False
+            if xs[-4] > xs[-3] and xs[-4] < xs[-1]:
+                mask[-4] = False
+            if xs[-1] > xs[-2] and xs[-1] < xs[0]:
+                mask[-1] = False
+            if xs[-3] > xs[-2] and xs[-3] < xs[-4]:
+                mask[-3] = False
 
         # 18 points
         for i in range(18):
@@ -123,7 +134,7 @@ class Skeleton:
         # 17 lines
         for i in range(17):
             cur_canvas = canvas.copy()
-            if not mask[self.lines[i]].any(): 
+            if not mask[self.lines[i]].all(): 
                 continue
             X = xs[self.lines[i]]
             Y = ys[self.lines[i]]
@@ -250,7 +261,7 @@ class GUI:
         self.point_idx = 0
         self.drag_sensitivity = 0.0001
         self.pan_scale_skel = True
-        self.is_backview = False
+        self.enable_occlusion = True
         
         dpg.create_context()
         self.register_dpg()
@@ -271,7 +282,7 @@ class GUI:
             mvp = proj @ mv
 
             # render our openpose image, somehow
-            self.render_buffer, self.points2D = self.skel.draw(mvp, self.H, self.W, backview=self.is_backview)
+            self.render_buffer, self.points2D = self.skel.draw(mvp, self.H, self.W, enable_occlusion=self.enable_occlusion)
         
             self.need_update = False
             
@@ -342,11 +353,11 @@ class GUI:
             dpg.add_checkbox(label="pan/scale skeleton", default_value=self.pan_scale_skel, callback=callback_set_pan_scale_mode)
 
             # backview mode
-            def callback_set_backview_mode(sender, app_data):
-                self.is_backview = not self.is_backview
+            def callback_set_occlusion_mode(sender, app_data):
+                self.enable_occlusion = not self.enable_occlusion
                 self.need_update = True
 
-            dpg.add_checkbox(label="set backview", default_value=self.is_backview, callback=callback_set_backview_mode)
+            dpg.add_checkbox(label="use occlusion", default_value=self.enable_occlusion, callback=callback_set_occlusion_mode)
 
             # fov slider
             def callback_set_fovy(sender, app_data):
@@ -508,12 +519,9 @@ if __name__ == '__main__':
         for ele in tqdm.tqdm(elevation):
             for azi in tqdm.tqdm(azimuth):
                 gui.cam.from_angle(ele, azi)
-                if azi > 120 and azi < 240:
-                    gui.is_backview = True
-                else:
-                    gui.is_backview = False
                 gui.need_update = True
                 gui.step()
+                dpg.render_dearpygui_frame()
                 image = (gui.render_buffer * 255).astype(np.uint8)
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(os.path.join(opt.save, f'{ele}_{azi:04d}.jpg'), image)
