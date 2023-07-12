@@ -1,9 +1,21 @@
+import os
 import cv2
 import math
+import json
+import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import dearpygui.dearpygui as dpg
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation
+
+def dot(x, y):
+    return np.sum(x * y, -1, keepdims=True)
+    
+def length(x, eps=1e-20):
+    return np.sqrt(np.maximum(np.sum(x * x, axis=-1, keepdims=True), eps))
+
+def safe_normalize(x, eps=1e-20):
+    return x / length(x, eps)
 
 class Skeleton:
 
@@ -11,30 +23,30 @@ class Skeleton:
 
         # init pose [18, 3], in [-1, 1]^3
         self.points3D = np.array([
-            [ 0.         , 0.81        ,0.         ,1.        ],
-            [ 0.         , 0.67        ,0.         ,1.        ],
-            [-0.16       , 0.63        ,0.         ,1.        ],
-            [-0.21       , 0.35        ,0.         ,1.        ],
-            [-0.26       ,-0.02        ,0.         ,1.        ],
-            [ 0.16       , 0.63        ,0.         ,1.        ],
-            [ 0.21       , 0.35        ,0.         ,1.        ],
-            [ 0.26       ,-0.02        ,0.         ,1.        ],
-            [ 0.09       , 0.14        ,0.         ,1.        ],
-            [ 0.14       ,-0.33        ,0.         ,1.        ],
-            [ 0.19       ,-0.95        ,0.         ,1.        ],
-            [-0.09       , 0.14        ,0.         ,1.        ],
-            [-0.14       ,-0.33        ,0.         ,1.        ],
-            [-0.19       ,-0.95        ,0.         ,1.        ],
-            [-0.05       , 0.86        ,0.         ,1.        ],
-            [ 0.05       , 0.86        ,0.         ,1.        ],
-            [-0.09       , 0.81        ,0.         ,1.        ],
-            [ 0.09       , 0.81        ,0.         ,1.        ],
+            [-0.00313026,  0.16587697,  0.05414092],
+            [-0.00857283,  0.1093518 , -0.00522604],
+            [-0.06817748,  0.10397182, -0.00657925],
+            [-0.11421658,  0.04033477,  0.00040599],
+            [-0.15643744, -0.02915882,  0.03309248],
+            [ 0.05288884,  0.10729481, -0.00067854],
+            [ 0.10355149,  0.04464601, -0.00735265],
+            [ 0.15390812, -0.02282556,  0.03085238],
+            [ 0.03897187, -0.0403506 ,  0.00220192],
+            [ 0.04027461, -0.15746351, -0.00187036],
+            [ 0.04605377, -0.26837209, -0.0018945 ],
+            [-0.0507806 , -0.04887162,  0.0022531 ],
+            [-0.04873568, -0.16551849, -0.00128197],
+            [-0.04840493, -0.27510208, -0.00128831],
+            [-0.03098677,  0.19395538,  0.01987491],
+            [ 0.01657042,  0.19560097,  0.02724142],
+            [-0.05411603,  0.17336673, -0.01328044],
+            [ 0.03733583,  0.16922003, -0.00946565]
         ], dtype=np.float32)
 
         self.name = ["nose", "neck", "right_shoulder", "right_elbow", "right_wrist", "left_shoulder", "left_elbow", "left_wrist", "right_hip", "right_knee", "right_ankle", "left_hip", "left_knee", "left_ankle", "right_eye", "left_eye", "right_ear", "left_ear"]
 
         # homogeneous
-        # self.points3D = np.concatenate([self.points3D, np.ones_like(self.points3D[:, :1])], axis=1) # [18, 4]
+        self.points3D = np.concatenate([self.points3D, np.ones_like(self.points3D[:, :1])], axis=1) # [18, 4]
 
         # lines [17, 2]
         self.lines = np.array([[0, 1], [1, 2], [2, 3], [3, 4], [1, 5], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13], [0, 14], [14, 16], [0, 15], [15, 17]], dtype=np.int32)
@@ -44,10 +56,50 @@ class Skeleton:
                        [85, 255, 0], [0, 255, 0], [0, 255, 85], [0, 255, 170], [0, 255, 255], [0, 170, 255], 
                        [0, 85, 255], [85, 0, 255], [170, 0, 255], [255, 0, 255], [255, 0, 170], [255, 0, 85]]
     
+    @property
+    def center(self):
+        return self.points3D[:, :3].mean(0)
+    
+    @property
+    def center_upper(self):
+        return self.points3D[0, :3]
 
-    def draw(self, mvp, H, W):
-        # mvp: [4, 4]    
+    @property
+    def torso_bbox(self):
+        # valid_points = self.points3D[[0, 1, 8, 11], :3]
+        valid_points = self.points3D[:, :3]
+        # assure 3D thickness
+        min_point = valid_points.min(0) - 0.1
+        max_point = valid_points.max(0) + 0.1
+        remedy_thickness = np.maximum(0, 0.8 - (max_point - min_point)) / 2
+        min_point -= remedy_thickness
+        max_point += remedy_thickness
+        return min_point, max_point
+    
+    def write_json(self, path):
 
+        with open(path, 'w') as f:
+            d = {}
+            for i in range(18):
+                d[self.name[i]] = self.points3D[i, :3].tolist()
+            json.dump(d, f)
+    
+    def load_json(self, path):
+
+        with open(path, 'r') as f:
+            d = json.load(f)
+            for i in range(18):
+                self.points3D[i, :3] = np.array(d[self.name[i]])
+
+    def scale(self, delta):
+        self.points3D[:, :3] *= 1.1 ** (-delta)
+
+    def pan(self, rot, dx, dy, dz=0):
+        # pan in camera coordinate system (careful on the sensitivity!)
+        self.points3D[:, :3] += 0.0005 * rot.as_matrix()[:3, :3] @ np.array([dx, -dy, dz])
+
+    def draw(self, mvp, H, W, backview=False):
+        # mvp: [4, 4]
         canvas = np.zeros((H, W, 3), dtype=np.uint8)
 
         points2D = self.points3D @ mvp.T # [18, 4]
@@ -55,14 +107,24 @@ class Skeleton:
 
         xs = (points2D[:, 0] + 1) / 2 * H # [18]
         ys = (points2D[:, 1] + 1) / 2 * W # [18]
+        mask = (xs >= 0) & (xs < H) & (ys >= 0) & (ys < W)
+
+        # hide nose, eyes
+        if backview:
+            mask[0] = False
+            mask[-3] = False
+            mask[-4] = False
 
         # 18 points
         for i in range(18):
+            if not mask[i]: continue
             cv2.circle(canvas, (int(xs[i]), int(ys[i])), 4, self.colors[i], thickness=-1)
 
         # 17 lines
         for i in range(17):
             cur_canvas = canvas.copy()
+            if not mask[self.lines[i]].any(): 
+                continue
             X = xs[self.lines[i]]
             Y = ys[self.lines[i]]
             mY = np.mean(Y)
@@ -88,7 +150,7 @@ class OrbitCamera:
         self.near = near
         self.far = far
         self.center = np.array([0, 0, 0], dtype=np.float32) # look at this point
-        self.rot = R.from_matrix(np.eye(3))
+        self.rot = Rotation.from_matrix(np.eye(3))
         self.up = np.array([0, 1, 0], dtype=np.float32) # need to be normalized!
 
     # pose
@@ -109,30 +171,57 @@ class OrbitCamera:
     @property
     def view(self):
         return np.linalg.inv(self.pose)
-    
+
     # intrinsics
     @property
     def intrinsics(self):
-        focal = self.H / (2 * np.tan(np.radians(self.fovy) / 2))
+        focal = self.H / (1.414 * np.tan(np.radians(self.fovy) / 2))
         return np.array([focal, focal, self.W // 2, self.H // 2], dtype=np.float32)
-
+    
     # projection (perspective)
     @property
     def perspective(self):
-        y = np.tan(np.radians(self.fovy) / 2)
+        y = 1.414 / 2 * np.tan(np.radians(self.fovy) / 2)
         aspect = self.W / self.H
-        return np.array([[1/(y*aspect),    0,            0,              0], 
-                         [           0,  -1/y,            0,              0],
-                         [           0,    0, -(self.far+self.near)/(self.far-self.near), -(2*self.far*self.near)/(self.far-self.near)], 
-                         [           0,    0,           -1,              0]], dtype=np.float32)
-
+        return np.array(
+            [
+                [1 / (y * aspect), 0, 0, 0],
+                [0, -1 / y, 0, 0],
+                [
+                    0,
+                    0,
+                    -(self.far + self.near) / (self.far - self.near),
+                    -(2 * self.far * self.near) / (self.far - self.near),
+                ],
+                [0, 0, -1, 0],
+            ],
+            dtype=np.float32,
+        )
     
+    def from_angle(self, elevation, azimuth, is_degree=True):
+        # elevation: [-90, 90], from +y --> -y
+        # azimuth: [0, 360], from +z --> -x --> -z --> +x --> +z
+        if is_degree:
+            elevation = np.deg2rad(elevation)
+            azimuth = np.deg2rad(azimuth)
+        x = self.radius * np.cos(elevation) * np.sin(azimuth)
+        y = self.radius * np.sin(elevation)
+        z = self.radius * np.cos(elevation) * np.cos(azimuth)
+        campos = np.array([x, y, z])  # [N, 3] 
+        forward_vector = safe_normalize(campos)
+        up_vector = self.up
+        right_vector = safe_normalize(np.cross(up_vector, forward_vector))
+        up_vector = safe_normalize(np.cross(forward_vector, right_vector))
+        rot_mat = np.stack([right_vector, up_vector, forward_vector], axis=1)
+        self.rot = Rotation.from_matrix(rot_mat)
+
+
     def orbit(self, dx, dy):
         # rotate along camera up/side axis!
         side = self.rot.as_matrix()[:3, 0] # why this is side --> ? # already normalized.
         rotvec_x = self.up * np.radians(-0.05 * dx)
         rotvec_y = side * np.radians(-0.05 * dy)
-        self.rot = R.from_rotvec(rotvec_x) * R.from_rotvec(rotvec_y) * self.rot
+        self.rot = Rotation.from_rotvec(rotvec_x) * Rotation.from_rotvec(rotvec_y) * self.rot
 
     def scale(self, delta):
         self.radius *= 1.1 ** (-delta)
@@ -154,10 +243,14 @@ class GUI:
         self.render_buffer = np.zeros((self.W, self.H, 3), dtype=np.float32)
         self.need_update = True # camera moved, should reset accumulation
 
-        self.save_path = 'pose.png'
+        self.save_image_path = 'pose.png'
+        self.save_json_path = 'pose.json'
         self.mouse_loc = np.array([0, 0])
         self.points2D = None # [18, 2]
         self.point_idx = 0
+        self.drag_sensitivity = 0.0001
+        self.pan_scale_skel = True
+        self.is_backview = False
         
         dpg.create_context()
         self.register_dpg()
@@ -178,7 +271,7 @@ class GUI:
             mvp = proj @ mv
 
             # render our openpose image, somehow
-            self.render_buffer, self.points2D = self.skel.draw(mvp, self.H, self.W)
+            self.render_buffer, self.points2D = self.skel.draw(mvp, self.H, self.W, backview=self.is_backview)
         
             self.need_update = False
             
@@ -211,21 +304,49 @@ class GUI:
                     dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (83, 18, 83))
                     dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 5)
                     dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 3, 3)
-                
-            def callback_save(sender, app_data):
+
+            # save image    
+            def callback_save_image(sender, app_data):
                 image = (self.render_buffer * 255).astype(np.uint8)
                 image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-                cv2.imwrite(self.save_path, image)
-                print(f'[INFO] write image to {self.save_path}')
+                cv2.imwrite(self.save_image_path, image)
+                print(f'[INFO] write image to {self.save_image_path}')
             
-            def callback_set_save_path(sender, app_data):
-                self.save_path = app_data
+            def callback_set_save_image_path(sender, app_data):
+                self.save_image_path = app_data
             
             with dpg.group(horizontal=True):
-                dpg.add_button(label="save image", tag="_button_save", callback=callback_save)
-                dpg.bind_item_theme("_button_save", theme_button)
+                dpg.add_button(label="save image", tag="_button_save_image", callback=callback_save_image)
+                dpg.bind_item_theme("_button_save_image", theme_button)
 
-                dpg.add_input_text(label="", default_value=self.save_path, callback=callback_set_save_path)
+                dpg.add_input_text(label="", default_value=self.save_image_path, callback=callback_set_save_image_path)
+            
+            # save json
+            def callback_save_json(sender, app_data):
+                self.skel.write_json(self.save_json_path)
+                print(f'[INFO] write json to {self.save_json_path}')
+            
+            def callback_set_save_json_path(sender, app_data):
+                self.save_json_path = app_data
+            
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="save json", tag="_button_save_json", callback=callback_save_json)
+                dpg.bind_item_theme("_button_save_json", theme_button)
+
+                dpg.add_input_text(label="", default_value=self.save_json_path, callback=callback_set_save_json_path)
+
+            # pan/scale mode
+            def callback_set_pan_scale_mode(sender, app_data):
+                self.pan_scale_skel = not self.pan_scale_skel
+
+            dpg.add_checkbox(label="pan/scale skeleton", default_value=self.pan_scale_skel, callback=callback_set_pan_scale_mode)
+
+            # backview mode
+            def callback_set_backview_mode(sender, app_data):
+                self.is_backview = not self.is_backview
+                self.need_update = True
+
+            dpg.add_checkbox(label="set backview", default_value=self.is_backview, callback=callback_set_backview_mode)
 
             # fov slider
             def callback_set_fovy(sender, app_data):
@@ -233,6 +354,13 @@ class GUI:
                 self.need_update = True
 
             dpg.add_slider_int(label="FoV (vertical)", min_value=1, max_value=120, format="%d deg", default_value=self.cam.fovy, callback=callback_set_fovy)
+
+            # drag sensitivity
+            def callback_set_drag_sensitivity(sender, app_data):
+                self.cam.fovy = app_data
+                self.need_update = True
+
+            dpg.add_slider_float(label="drag sensitivity", min_value=0.000001, max_value=0.001, format="%f", default_value=self.drag_sensitivity, callback=callback_set_drag_sensitivity)
 
               
         ### register camera handler
@@ -255,8 +383,12 @@ class GUI:
                 return
 
             delta = app_data
+            
+            if self.pan_scale_skel:
+                self.skel.scale(delta)
+            else:
+                self.cam.scale(delta)
 
-            self.cam.scale(delta)
             self.need_update = True
 
 
@@ -268,7 +400,11 @@ class GUI:
             dx = app_data[1]
             dy = app_data[2]
 
-            self.cam.pan(dx, dy)
+            if self.pan_scale_skel:
+                self.skel.pan(self.cam.rot, dx, dy)
+            else:
+                self.cam.pan(dx, dy)
+
             self.need_update = True
 
         def callback_set_mouse_loc(sender, app_data):
@@ -300,7 +436,7 @@ class GUI:
             dx = app_data[1]
             dy = app_data[2]
         
-            self.skel.points3D[self.point_idx, :3] += 0.0001 * self.cam.rot.as_matrix()[:3, :3] @ np.array([dx, -dy, 0])
+            self.skel.points3D[self.point_idx, :3] += self.drag_sensitivity * self.cam.rot.as_matrix()[:3, :3] @ np.array([dx, -dy, 0])
 
             self.need_update = True
 
@@ -350,10 +486,36 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--W', type=int, default=512, help="GUI width")
     parser.add_argument('--H', type=int, default=512, help="GUI height")
-    parser.add_argument('--radius', type=float, default=3, help="default GUI camera radius from center")
-    parser.add_argument('--fovy', type=float, default=50, help="default GUI camera fovy")
+    parser.add_argument('--load', type=str, default=None, help="path to load a json pose")
+    parser.add_argument('--save', type=str, default=None, help="path to render and save pose images")
+    parser.add_argument('--radius', type=float, default=2.7, help="default GUI camera radius from center")
+    parser.add_argument('--fovy', type=float, default=18.8, help="default GUI camera fovy")
 
     opt = parser.parse_args()
 
     gui = GUI(opt)
-    gui.render()
+
+    if opt.load is not None:
+        print(f'[INFO] load from {opt.load}')
+        gui.skel.load_json(opt.load)
+        gui.need_update = True
+    
+    if opt.save is not None:
+        os.makedirs(opt.save, exist_ok=True)
+        # render from fixed views and save all images
+        elevation = [-10, 0, 10, 20, 30]
+        azimuth = np.arange(0, 360, dtype=np.int32)
+        for ele in tqdm.tqdm(elevation):
+            for azi in tqdm.tqdm(azimuth):
+                gui.cam.from_angle(ele, azi)
+                if azi > 120 and azi < 240:
+                    gui.is_backview = True
+                else:
+                    gui.is_backview = False
+                gui.need_update = True
+                gui.step()
+                image = (gui.render_buffer * 255).astype(np.uint8)
+                image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(os.path.join(opt.save, f'{ele}_{azi:04d}.jpg'), image)
+    else:
+        gui.render()
