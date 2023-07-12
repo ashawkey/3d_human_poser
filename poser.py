@@ -111,20 +111,22 @@ class Skeleton:
 
         # hide certain keypoints based on empirical occlusion
         if enable_occlusion:
-            # if nose is further than both eyes, it's back face
-            if points[0, 2] > points[-3, 2] and points[0, 2] > points[-4, 2]:
-                mask[0] = False
-                mask[-3] = False
-                mask[-4] = False
-            # if left ear is in the left of neck and right of right ear, hide it... and so on
-            if xs[-2] > xs[0] and xs[-2] < xs[-1]:
-                mask[-2] = False
-            if xs[-4] > xs[-3] and xs[-4] < xs[-1]:
-                mask[-4] = False
-            if xs[-1] > xs[-2] and xs[-1] < xs[0]:
+            # decide view by the position of nose between two ears
+            if points[0, 2] > points[-1, 2] and points[0, 2] < points[-2, 2]:
+                # left view
+                mask[-2] = False # no right ear
+                if xs[-4] > xs[-3]:
+                    mask[-4] = False # no right eye if it's "righter" than left eye
+            elif points[0, 2] < points[-1, 2] and points[0, 2] > points[-2, 2]:
+                # right view
                 mask[-1] = False
-            if xs[-3] > xs[-2] and xs[-3] < xs[-4]:
-                mask[-3] = False
+                if xs[-3] < xs[-4]:
+                    mask[-3] = False
+            elif points[0, 2] > points[-1, 2] and points[0, 2] > points[-2, 2]:
+                # back view
+                mask[0] = False # no nose
+                mask[-3] = False # no eyes
+                mask[-4] = False
 
         # 18 points
         for i in range(18):
